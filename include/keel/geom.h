@@ -5,7 +5,7 @@
 #include "keel/memory.h"
 #include "keel/ref.h"
 
-namespace keel {
+namespace keel::geom {
 
 // ============================================================================
 // 1. 2D Polygons
@@ -101,4 +101,4 @@ struct MatchpairsOutput {
                                           f64 cost_unmatched, bool maximize = false,
                                           Allocator* alloc = nullptr);
 
-} // namespace keel
+} // namespace keel::geom

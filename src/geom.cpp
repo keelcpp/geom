@@ -5,7 +5,7 @@
 #include "keel/math.h"
 #include "keel/small_array.h"
 
-namespace keel {
+namespace keel::geom {
 
 namespace {
 
@@ -675,4 +675,4 @@ MatchpairsOutput matchpairs(ArrayRef<f64> cost_colmajor, usize rows, usize cols,
     return res;
 }
 
-} // namespace keel
+} // namespace keel::geom
