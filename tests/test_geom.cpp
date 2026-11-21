@@ -9,7 +9,7 @@ keel::i32 g_failed = 0;
 
 void check(bool cond, const char* expr, keel::i32 line) {
     if (!cond) {
-        std::fprintf(stderr, "FAIL [line %d]: %s\n", static_cast<int>(line), expr);
+        std::fprintf(stderr, "FAIL [line %d]: %s\n", keel::as<int>(line), expr);
         ++g_failed;
     }
 }
@@ -17,7 +17,7 @@ void check(bool cond, const char* expr, keel::i32 line) {
 void check_near(keel::f64 got, keel::f64 expected, keel::f64 tol, const char* expr, keel::i32 line) {
     if (keel::is_nan(got) || keel::abs(got - expected) > tol) {
         std::fprintf(stderr, "FAIL [line %d]: %s (got %.15g, expected %.15g)\n",
-                     static_cast<int>(line), expr, got, expected);
+                     keel::as<int>(line), expr, got, expected);
         ++g_failed;
     }
 }
@@ -55,8 +55,8 @@ void test_delaunay_and_griddata() {
     keel::Array<keel::f64> gv;
     for (keel::usize i = 0; i < 7; ++i) {
         for (keel::usize j = 0; j < 7; ++j) {
-            const keel::f64 xx = static_cast<keel::f64>(i) + 0.01 * static_cast<keel::f64>((j * 3) % 5);
-            const keel::f64 yy = static_cast<keel::f64>(j) + 0.01 * static_cast<keel::f64>((i * 2) % 5);
+            const keel::f64 xx = keel::as<keel::f64>(i) + 0.01 * keel::as<keel::f64>((j * 3) % 5);
+            const keel::f64 yy = keel::as<keel::f64>(j) + 0.01 * keel::as<keel::f64>((i * 2) % 5);
             gx.push_back(xx);
             gy.push_back(yy);
             gv.push_back(2.0 * xx + 3.0 * yy + 1.0);
@@ -131,7 +131,7 @@ int main() {
     test_histcounts2_and_matchpairs();
 
     if (g_failed != 0) {
-        std::fprintf(stderr, "test_geom: %d failure(s)\n", static_cast<int>(g_failed));
+        std::fprintf(stderr, "test_geom: %d failure(s)\n", keel::as<int>(g_failed));
         return 1;
     }
     std::printf("test_geom: all tests passed\n");

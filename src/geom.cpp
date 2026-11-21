@@ -160,7 +160,7 @@ i64 find_bin(ArrayRef<f64> edges, f64 v) noexcept {
         }
     }
     if (v >= edges[lo] && (v < edges[lo + 1] || (lo == e - 2 && v == edges[lo + 1]))) {
-        return static_cast<i64>(lo);
+        return as<i64>(lo);
     }
     return -1;
 }
@@ -288,7 +288,7 @@ Array<usize> boundary(ArrayRef<f64> x, ArrayRef<f64> y, f64 shrink, Allocator* a
     keel::sort(sorted_len);
     const f64 q = 1.0 - shrink;
     const usize qi =
-        keel::min(sorted_len.size() - 1, static_cast<usize>(keel::floor(q * static_cast<f64>(sorted_len.size()))));
+        keel::min(sorted_len.size() - 1, as<usize>(keel::floor(q * as<f64>(sorted_len.size()))));
     const f64 threshold = sorted_len[qi];
 
     Array<Triangle> kept(salloc);
@@ -411,7 +411,7 @@ bool griddata(ArrayRef<f64> x, ArrayRef<f64> y, ArrayRef<f64> v, ArrayRef<f64> x
         }
     }
     for (usize j = 0; j < n; ++j) {
-        if (counts[j] > 1) uv[j] /= static_cast<f64>(counts[j]);
+        if (counts[j] > 1) uv[j] /= as<f64>(counts[j]);
     }
 
     if (method == ScatteredMethod::Nearest) {
@@ -566,7 +566,7 @@ void histcounts2(ArrayRef<f64> x, ArrayRef<f64> y, ArrayRef<f64> xedges, ArrayRe
         const i64 bx = find_bin(xedges, x[i]);
         const i64 by = find_bin(yedges, y[i]);
         if (bx < 0 || by < 0) continue;
-        out_colmajor[static_cast<usize>(by) * nx + static_cast<usize>(bx)] += 1.0;
+        out_colmajor[as<usize>(by) * nx + as<usize>(bx)] += 1.0;
     }
 }
 
@@ -612,55 +612,55 @@ MatchpairsOutput matchpairs(ArrayRef<f64> cost_colmajor, usize rows, usize cols,
     Array<u8> used(salloc);
 
     for (usize i = 1; i <= n; ++i) {
-        p[0] = static_cast<i32>(i);
+        p[0] = as<i32>(i);
         i32 j0 = 0;
         minv.assign(n + 1, Limits<f64>::infinity());
         used.assign(n + 1, u8{0});
         do {
-            used[static_cast<usize>(j0)] = 1;
-            const i32 i0 = p[static_cast<usize>(j0)];
+            used[as<usize>(j0)] = 1;
+            const i32 i0 = p[as<usize>(j0)];
             i32 j1 = -1;
             f64 delta = Limits<f64>::infinity();
             for (usize j = 1; j <= n; ++j) {
                 if (used[j]) continue;
-                const f64 cur = a[static_cast<usize>(i0 - 1) * n + (j - 1)] - u[static_cast<usize>(i0)] - v_d[j];
+                const f64 cur = a[as<usize>(i0 - 1) * n + (j - 1)] - u[as<usize>(i0)] - v_d[j];
                 if (cur < minv[j]) {
                     minv[j] = cur;
                     way[j] = j0;
                 }
                 if (minv[j] < delta) {
                     delta = minv[j];
-                    j1 = static_cast<i32>(j);
+                    j1 = as<i32>(j);
                 }
             }
             for (usize j = 0; j <= n; ++j) {
                 if (used[j]) {
-                    u[static_cast<usize>(p[j])] += delta;
+                    u[as<usize>(p[j])] += delta;
                     v_d[j] -= delta;
                 } else {
                     minv[j] -= delta;
                 }
             }
             j0 = j1;
-        } while (p[static_cast<usize>(j0)] != 0);
+        } while (p[as<usize>(j0)] != 0);
         do {
-            const i32 j1 = way[static_cast<usize>(j0)];
-            p[static_cast<usize>(j0)] = p[static_cast<usize>(j1)];
+            const i32 j1 = way[as<usize>(j0)];
+            p[as<usize>(j0)] = p[as<usize>(j1)];
             j0 = j1;
         } while (j0 != 0);
     }
 
     Array<i32> row_assign(n, i32{-1}, salloc);
     for (usize j = 1; j <= n; ++j) {
-        if (p[j] > 0) row_assign[static_cast<usize>(p[j] - 1)] = static_cast<i32>(j) - 1;
+        if (p[j] > 0) row_assign[as<usize>(p[j] - 1)] = as<i32>(j) - 1;
     }
 
     res.matches.reserve(keel::min(rows, cols));
     res.unmatched_rows.reserve(rows);
     for (usize i = 0; i < rows; ++i) {
         const i32 j = row_assign[i];
-        if (j >= 0 && static_cast<usize>(j) < cols) {
-            res.matches.push_back(PairIndex{i, static_cast<usize>(j)});
+        if (j >= 0 && as<usize>(j) < cols) {
+            res.matches.push_back(PairIndex{i, as<usize>(j)});
         } else {
             res.unmatched_rows.push_back(i);
         }
