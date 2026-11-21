@@ -1,0 +1,12 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(keel)
+
+include("${CMAKE_CURRENT_LIST_DIR}/keel_geomTargets.cmake")
+
+if(TARGET keel::keel_geom AND NOT TARGET keel::geom)
+    add_library(keel::geom ALIAS keel::keel_geom)
+endif()
+
+check_required_components(keel_geom)
