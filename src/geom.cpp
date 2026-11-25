@@ -491,6 +491,249 @@ bool griddata(ArrayRef<f64> x, ArrayRef<f64> y, ArrayRef<f64> v, ArrayRef<f64> x
     }
 
     Array<Triangle> tris = delaunay_impl(ux.data(), uy.data(), n, salloc);
+
+    if (method == ScatteredMethod::Cubic) {
+        // Build 1-ring vertex adjacency from Delaunay triangles.
+        Array<usize> deg(n, usize{0}, salloc);
+        for (const Triangle& t : tris) {
+            deg[t.v0] += 2;
+            deg[t.v1] += 2;
+            deg[t.v2] += 2;
+        }
+        Array<usize> adj_off(n + 1, usize{0}, salloc);
+        for (usize i = 0; i < n; ++i) adj_off[i + 1] = adj_off[i] + deg[i];
+        Array<usize> adj_cur(n, usize{0}, salloc);
+        for (usize i = 0; i < n; ++i) adj_cur[i] = adj_off[i];
+        Array<usize> adj(adj_off[n], usize{0}, salloc);
+        for (const Triangle& t : tris) {
+            adj[adj_cur[t.v0]++] = t.v1;
+            adj[adj_cur[t.v0]++] = t.v2;
+            adj[adj_cur[t.v1]++] = t.v0;
+            adj[adj_cur[t.v1]++] = t.v2;
+            adj[adj_cur[t.v2]++] = t.v0;
+            adj[adj_cur[t.v2]++] = t.v1;
+        }
+
+        // Estimate vertex gradients (gx, gy) via weighted local quadratic least-squares
+        // over 1-ring + 2-ring Delaunay neighbors (exact for all degree <= 2 polynomials).
+        Array<f64> gx(n, 0.0, salloc);
+        Array<f64> gy(n, 0.0, salloc);
+        Array<u32> stamp(n, u32{0}, salloc);
+        Array<usize> nbrs(salloc);
+        u32 cur_stamp = 0;
+
+        auto solve_small = [](f64* a, f64* b, usize m) noexcept -> bool {
+            for (usize k = 0; k < m; ++k) {
+                usize piv = k;
+                f64 best = keel::abs(a[k * m + k]);
+                for (usize i = k + 1; i < m; ++i) {
+                    const f64 v = keel::abs(a[i * m + k]);
+                    if (v > best) {
+                        best = v;
+                        piv = i;
+                    }
+                }
+                if (best < 1e-14) return false;
+                if (piv != k) {
+                    for (usize j = k; j < m; ++j) keel::swap(a[k * m + j], a[piv * m + j]);
+                    keel::swap(b[k], b[piv]);
+                }
+                const f64 diag = a[k * m + k];
+                for (usize i = k + 1; i < m; ++i) {
+                    const f64 f = a[i * m + k] / diag;
+                    for (usize j = k + 1; j < m; ++j) a[i * m + j] -= f * a[k * m + j];
+                    b[i] -= f * b[k];
+                }
+            }
+            for (usize k = m; k-- > 0;) {
+                f64 s = b[k];
+                for (usize j = k + 1; j < m; ++j) s -= a[k * m + j] * b[j];
+                b[k] = s / a[k * m + k];
+            }
+            return true;
+        };
+
+        for (usize i = 0; i < n; ++i) {
+            ++cur_stamp;
+            stamp[i] = cur_stamp;
+            nbrs.clear();
+            const usize r1_beg = adj_off[i];
+            const usize r1_end = adj_off[i + 1];
+            for (usize e = r1_beg; e < r1_end; ++e) {
+                const usize u = adj[e];
+                if (stamp[u] != cur_stamp) {
+                    stamp[u] = cur_stamp;
+                    nbrs.push_back(u);
+                }
+            }
+            const usize n1 = nbrs.size();
+            if (n1 < 6) {
+                for (usize k = 0; k < n1; ++k) {
+                    const usize u = nbrs[k];
+                    for (usize e = adj_off[u]; e < adj_off[u + 1]; ++e) {
+                        const usize w = adj[e];
+                        if (stamp[w] != cur_stamp) {
+                            stamp[w] = cur_stamp;
+                            nbrs.push_back(w);
+                        }
+                    }
+                }
+            }
+
+            // Compute local characteristic scale so normal equations stay well-conditioned.
+            f64 scale = 0.0;
+            for (usize k = 0; k < nbrs.size(); ++k) {
+                const usize u = nbrs[k];
+                const f64 d = keel::hypot(ux[u] - ux[i], uy[u] - uy[i]);
+                if (d > scale) scale = d;
+            }
+            if (scale <= 0.0) continue;
+            const f64 inv_s = 1.0 / scale;
+
+            bool solved = false;
+            if (nbrs.size() >= 5) {
+                f64 ata[25] = {};
+                f64 atb[5] = {};
+                for (usize k = 0; k < nbrs.size(); ++k) {
+                    const usize u = nbrs[k];
+                    const f64 dx = (ux[u] - ux[i]) * inv_s;
+                    const f64 dy = (uy[u] - uy[i]) * inv_s;
+                    const f64 r2 = dx * dx + dy * dy;
+                    if (r2 < 1e-24) continue;
+                    const f64 wt = 1.0 / (r2 + 1e-6);
+                    const f64 dv = uv[u] - uv[i];
+                    const f64 row[5] = {dx, dy, 0.5 * dx * dx, dx * dy, 0.5 * dy * dy};
+                    for (usize r = 0; r < 5; ++r) {
+                        atb[r] += wt * row[r] * dv;
+                        for (usize c = 0; c < 5; ++c) ata[r * 5 + c] += wt * row[r] * row[c];
+                    }
+                }
+                if (solve_small(ata, atb, 5)) {
+                    gx[i] = atb[0] * inv_s;
+                    gy[i] = atb[1] * inv_s;
+                    solved = true;
+                }
+            }
+            if (!solved && nbrs.size() >= 2) {
+                f64 ata[4] = {};
+                f64 atb[2] = {};
+                for (usize k = 0; k < nbrs.size(); ++k) {
+                    const usize u = nbrs[k];
+                    const f64 dx = (ux[u] - ux[i]) * inv_s;
+                    const f64 dy = (uy[u] - uy[i]) * inv_s;
+                    const f64 r2 = dx * dx + dy * dy;
+                    if (r2 < 1e-24) continue;
+                    const f64 wt = 1.0 / (r2 + 1e-6);
+                    const f64 dv = uv[u] - uv[i];
+                    ata[0] += wt * dx * dx;
+                    ata[1] += wt * dx * dy;
+                    ata[2] += wt * dy * dx;
+                    ata[3] += wt * dy * dy;
+                    atb[0] += wt * dx * dv;
+                    atb[1] += wt * dy * dv;
+                }
+                if (solve_small(ata, atb, 2)) {
+                    gx[i] = atb[0] * inv_s;
+                    gy[i] = atb[1] * inv_s;
+                }
+            }
+        }
+
+        // Clough-Tocher C1 macro-element evaluator on a single triangle.
+        auto eval_ct = [](f64 x1, f64 y1, f64 x2, f64 y2, f64 x3, f64 y3, f64 f1, f64 f2, f64 f3,
+                          f64 gx1, f64 gy1, f64 gx2, f64 gy2, f64 gx3, f64 gy3, f64 b1, f64 b2,
+                          f64 b3) noexcept -> f64 {
+            const f64 c3000 = f1;
+            const f64 c0300 = f2;
+            const f64 c0030 = f3;
+
+            const f64 c2100 = f1 + (gx1 * (x2 - x1) + gy1 * (y2 - y1)) / 3.0;
+            const f64 c2010 = f1 + (gx1 * (x3 - x1) + gy1 * (y3 - y1)) / 3.0;
+            const f64 c1200 = f2 + (gx2 * (x1 - x2) + gy2 * (y1 - y2)) / 3.0;
+            const f64 c0210 = f2 + (gx2 * (x3 - x2) + gy2 * (y3 - y2)) / 3.0;
+            const f64 c1020 = f3 + (gx3 * (x1 - x3) + gy3 * (y1 - y3)) / 3.0;
+            const f64 c0120 = f3 + (gx3 * (x2 - x3) + gy3 * (y2 - y3)) / 3.0;
+
+            const f64 c2001 = (c3000 + c2100 + c2010) / 3.0;
+            const f64 c0201 = (c0300 + c1200 + c0210) / 3.0;
+            const f64 c0021 = (c0030 + c1020 + c0120) / 3.0;
+
+            const f64 x0 = (x1 + x2 + x3) / 3.0;
+            const f64 y0 = (y1 + y2 + y3) / 3.0;
+
+            auto mid_face = [&](f64 xj, f64 yj, f64 xk, f64 yk, f64 cjjj, f64 cjjk, f64 cjkk,
+                                f64 ckkk, f64 cjj0, f64 ckk0) noexcept -> f64 {
+                const f64 ex = xk - xj;
+                const f64 ey = yk - yj;
+                const f64 e2 = ex * ex + ey * ey;
+                const f64 lam = (e2 > 0.0) ? (((x0 - xj) * ex + (y0 - yj) * ey) / e2) : 0.5;
+                const f64 d0 = (cjj0 - cjjj) - lam * (cjjk - cjjj);
+                const f64 d2 = (ckk0 - cjkk) - lam * (ckkk - cjkk);
+                return cjjk + lam * (cjkk - cjjk) + 0.5 * (d0 + d2);
+            };
+
+            const f64 c0111 = mid_face(x2, y2, x3, y3, c0300, c0210, c0120, c0030, c0201, c0021);
+            const f64 c1011 = mid_face(x3, y3, x1, y1, c0030, c1020, c2010, c3000, c0021, c2001);
+            const f64 c1101 = mid_face(x1, y1, x2, y2, c3000, c2100, c1200, c0300, c2001, c0201);
+
+            const f64 c1002 = (c2001 + c1101 + c1011) / 3.0;
+            const f64 c0102 = (c0201 + c1101 + c0111) / 3.0;
+            const f64 c0012 = (c0021 + c1011 + c0111) / 3.0;
+            const f64 c0003 = (c1002 + c0102 + c0012) / 3.0;
+
+            auto eval_bernstein = [](f64 u, f64 v, f64 w, f64 c300, f64 c030, f64 c003, f64 c210,
+                                     f64 c120, f64 c201, f64 c021, f64 c102, f64 c012,
+                                     f64 c111) noexcept -> f64 {
+                const f64 u2 = u * u;
+                const f64 v2 = v * v;
+                const f64 w2 = w * w;
+                return c300 * u2 * u + c030 * v2 * v + c003 * w2 * w +
+                       3.0 * (c210 * u2 * v + c120 * u * v2 + c201 * u2 * w + c021 * v2 * w +
+                              c102 * u * w2 + c012 * v * w2) +
+                       6.0 * c111 * u * v * w;
+            };
+
+            if (b1 <= b2 && b1 <= b3) {
+                return eval_bernstein(b2 - b1, b3 - b1, 3.0 * b1, c0300, c0030, c0003, c0210, c0120,
+                                      c0201, c0021, c0102, c0012, c0111);
+            }
+            if (b2 <= b1 && b2 <= b3) {
+                return eval_bernstein(b3 - b2, b1 - b2, 3.0 * b2, c0030, c3000, c0003, c1020, c2010,
+                                      c0021, c2001, c0012, c1002, c1011);
+            }
+            return eval_bernstein(b1 - b3, b2 - b3, 3.0 * b3, c3000, c0300, c0003, c2100, c1200,
+                                  c2001, c0201, c1002, c0102, c1101);
+        };
+
+        for (usize q = 0; q < nq; ++q) {
+            const f64 qx = xq[q];
+            const f64 qy = yq[q];
+            bool found = false;
+            for (const Triangle& t : tris) {
+                const f64 xa = ux[t.v0];
+                const f64 ya = uy[t.v0];
+                const f64 xb = ux[t.v1];
+                const f64 yb = uy[t.v1];
+                const f64 xc = ux[t.v2];
+                const f64 yc = uy[t.v2];
+                const f64 denom = (yb - yc) * (xa - xc) + (xc - xb) * (ya - yc);
+                if (keel::abs(denom) < 1e-15) continue;
+                const f64 l1 = ((yb - yc) * (qx - xc) + (xc - xb) * (qy - yc)) / denom;
+                const f64 l2 = ((yc - ya) * (qx - xc) + (xa - xc) * (qy - yc)) / denom;
+                const f64 l3 = 1.0 - l1 - l2;
+                if (l1 >= -1e-9 && l2 >= -1e-9 && l3 >= -1e-9) {
+                    out[q] = eval_ct(xa, ya, xb, yb, xc, yc, uv[t.v0], uv[t.v1], uv[t.v2],
+                                     gx[t.v0], gy[t.v0], gx[t.v1], gy[t.v1], gx[t.v2], gy[t.v2],
+                                     l1, l2, l3);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) out[q] = nan;
+        }
+        return true;
+    }
+
     for (usize q = 0; q < nq; ++q) {
         const f64 qx = xq[q];
         const f64 qy = yq[q];

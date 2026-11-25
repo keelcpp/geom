@@ -1,7 +1,6 @@
 #include "keel/geom.h"
+#include "keel/format.h"
 #include "keel/math.h"
-
-#include <cstdio>
 
 namespace {
 
@@ -9,15 +8,14 @@ keel::i32 g_failed = 0;
 
 void check(bool cond, const char* expr, keel::i32 line) {
     if (!cond) {
-        std::fprintf(stderr, "FAIL [line %d]: %s\n", keel::as<int>(line), expr);
+        keel::eprintln("FAIL [line {}]: {}", line, expr);
         ++g_failed;
     }
 }
 
 void check_near(keel::f64 got, keel::f64 expected, keel::f64 tol, const char* expr, keel::i32 line) {
     if (keel::is_nan(got) || keel::abs(got - expected) > tol) {
-        std::fprintf(stderr, "FAIL [line %d]: %s (got %.15g, expected %.15g)\n",
-                     keel::as<int>(line), expr, got, expected);
+        keel::eprintln("FAIL [line {}]: {} (got {}, expected {})", line, expr, got, expected);
         ++g_failed;
     }
 }
@@ -73,6 +71,20 @@ void test_delaunay_and_griddata() {
                          keel::geom::ScatteredMethod::Linear));
     CHECK_NEAR(qout[0], 2.0 * 2.5 + 3.0 * 3.5 + 1.0, 1e-10);
     CHECK(keel::is_nan(qout[1]));
+
+    // Cubic Clough-Tocher reproduces quadratic polynomials to high precision inside hull.
+    keel::Array<keel::f64> qv;
+    for (keel::usize i = 0; i < gx.size(); ++i) {
+        const keel::f64 xx = gx[i];
+        const keel::f64 yy = gy[i];
+        qv.push_back(1.5 * xx * xx - 0.7 * xx * yy + 2.2 * yy * yy - 3.0 * xx + 1.0);
+    }
+    keel::f64 qcout[2] = {0.0, 0.0};
+    CHECK(keel::geom::griddata(gx.as_ref(), gy.as_ref(), qv.as_ref(), {qx, 2}, {qy, 2}, {qcout, 2},
+                         keel::geom::ScatteredMethod::Cubic));
+    const keel::f64 expected_q = 1.5 * 2.5 * 2.5 - 0.7 * 2.5 * 3.5 + 2.2 * 3.5 * 3.5 - 3.0 * 2.5 + 1.0;
+    CHECK_NEAR(qcout[0], expected_q, 1e-10);
+    CHECK(keel::is_nan(qcout[1]));
 
     // Nearest & BiharmonicV4.
     const keel::f64 v5[5] = {0.0, 1.0, 2.0, 1.0, 1.0};
@@ -131,9 +143,9 @@ int main() {
     test_histcounts2_and_matchpairs();
 
     if (g_failed != 0) {
-        std::fprintf(stderr, "test_geom: %d failure(s)\n", keel::as<int>(g_failed));
+        keel::eprintln("test_geom: {} failure(s)", g_failed);
         return 1;
     }
-    std::printf("test_geom: all tests passed\n");
+    keel::println("test_geom: all tests passed");
     return 0;
 }
