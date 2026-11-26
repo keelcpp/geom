@@ -4,10 +4,11 @@
 
 ## Features
 
-- **Polygons**: `polyarea` (shoelace area), `inpolygon_point`, `inpolygon` (ray-casting).
+- **Polygons**: `polyarea` (shoelace area), `inpolygon_point`, `inpolygon` (ray-casting with exact edge/vertex boundary inclusion).
 - **Convex Hull & Alpha-Shape Boundary**: `convhull` (Andrew's monotone chain), `boundary` (shrink-factor Delaunay boundary extraction).
-- **2D Delaunay Triangulation**: `delaunay` (exact circumcircle for small clouds + Bowyer-Watson incremental triangulation for larger point sets).
-- **Scattered Interpolation**: `griddata` (Delaunay barycentric linear, nearest-neighbor, Sandwell biharmonic spline v4 with coincident-point deduplication) and `griddatan_nearest` (ND nearest-neighbor).
+- **2D Delaunay Triangulation**: `delaunay` (scale-invariant Bowyer–Watson incremental triangulation with co-circular and duplicate-point handling).
+- **Scattered Interpolation**: `griddata` (Delaunay barycentric `Linear`, `Nearest`, Sibson `Natural` neighbor via Watson circumcenter areas, Clough–Tocher C1 `Cubic`, and Sandwell `BiharmonicV4` spline) and `griddatan_nearest` (ND nearest-neighbor).
 - **2D Histogram Binning**: `histcounts2`.
-- **Linear Assignment / Bipartite Matching**: `matchpairs` (Jonker-Volgenant Hungarian algorithm with optional unmatched cost and min/max modes).
+- **Linear Assignment / Bipartite Matching**: `matchpairs` (Jonker–Volgenant Hungarian algorithm with dynamic cost scaling, `Inf`/`NaN` guards, and min/max modes).
 - Zero STL in public headers, compiles cleanly under `-fno-exceptions -fno-rtti`.
+- Differential reference test suite (`tests/verify_reference.py`) validated against NumPy, SciPy, and MATLAB.

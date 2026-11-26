@@ -39,62 +39,75 @@ f64 in_circle_det(const f64* x, const f64* y, usize a, usize b, usize c, usize p
     return ax * (by * c2 - cy * b2) - ay * (bx * c2 - cx * b2) + a2 * (bx * cy - cx * by);
 }
 
+bool circumcenter(f64 ax, f64 ay, f64 bx, f64 by, f64 cx, f64 cy, f64& ox, f64& oy) noexcept {
+    const f64 d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+    const f64 scale = max(1.0, max(abs(ax - bx), abs(ay - by)) * max(abs(ax - cx), abs(ay - cy)));
+    if (abs(d) <= 1e-14 * scale) return false;
+    const f64 a2 = ax * ax + ay * ay;
+    const f64 b2 = bx * bx + by * by;
+    const f64 c2 = cx * cx + cy * cy;
+    ox = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d;
+    oy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d;
+    return is_finite(ox) && is_finite(oy);
+}
+
 Array<Triangle> delaunay_impl(const f64* x, const f64* y, usize n, Allocator* alloc) {
     Array<Triangle> tris(alloc);
     if (n < 3) return tris;
-    tris.reserve(2 * n);
 
-    if (n <= 30) {
-        for (usize a = 0; a < n; ++a) {
-            for (usize b = a + 1; b < n; ++b) {
-                for (usize c = b + 1; c < n; ++c) {
-                    const f64 sa2 = signed_area2(x, y, a, b, c);
-                    if (keel::abs(sa2) < 1e-15) continue;
-                    usize va = a;
-                    usize vb = b;
-                    usize vc = c;
-                    if (sa2 < 0.0) keel::swap(vb, vc);
-                    bool ok = true;
-                    for (usize p = 0; p < n; ++p) {
-                        if (p == va || p == vb || p == vc) continue;
-                        if (in_circle_det(x, y, va, vb, vc, p) > 1e-12) {
-                            ok = false;
-                            break;
-                        }
-                    }
-                    if (ok) tris.push_back(Triangle{va, vb, vc});
-                }
-            }
-        }
-        return tris;
-    }
-
-    // Bowyer-Watson incremental Delaunay triangulation for n > 30.
+    // Normalize coordinates to [-0.5, 0.5] so circumcircle & area tolerances are scale-invariant,
+    // and use Bowyer-Watson for all n >= 3 (avoids co-circular overlapping triangles).
     ArenaTemp scratch = get_scratch(alloc);
     Allocator* salloc = scratch.allocator();
-    Array<f64> bwx(n + 3, salloc);
-    Array<f64> bwy(n + 3, salloc);
-    f64 xmin = x[0];
-    f64 xmax = x[0];
-    f64 ymin = y[0];
-    f64 ymax = y[0];
+
+    f64 xmin = Limits<f64>::infinity();
+    f64 xmax = -Limits<f64>::infinity();
+    f64 ymin = Limits<f64>::infinity();
+    f64 ymax = -Limits<f64>::infinity();
+    usize valid_count = 0;
     for (usize i = 0; i < n; ++i) {
-        bwx[i] = x[i];
-        bwy[i] = y[i];
+        if (!is_finite(x[i]) || !is_finite(y[i])) continue;
         if (x[i] < xmin) xmin = x[i];
         if (x[i] > xmax) xmax = x[i];
         if (y[i] < ymin) ymin = y[i];
         if (y[i] > ymax) ymax = y[i];
+        ++valid_count;
     }
-    const f64 dmax = keel::max(keel::max(xmax - xmin, ymax - ymin), 1.0);
+    if (valid_count < 3) return tris;
+
+    const f64 dmax = keel::max(xmax - xmin, ymax - ymin);
+    if (dmax <= 0.0 || !is_finite(dmax)) return tris;
+    const f64 inv_d = 1.0 / dmax;
     const f64 xmid = 0.5 * (xmin + xmax);
     const f64 ymid = 0.5 * (ymin + ymax);
-    bwx[n] = xmid - 20.0 * dmax;
-    bwy[n] = ymid - dmax;
-    bwx[n + 1] = xmid + 20.0 * dmax;
-    bwy[n + 1] = ymid - dmax;
-    bwx[n + 2] = xmid;
-    bwy[n + 2] = ymid + 20.0 * dmax;
+
+    Array<f64> bwx(n + 3, 0.0, salloc);
+    Array<f64> bwy(n + 3, 0.0, salloc);
+    Array<u8> active(n, u8{0}, salloc);
+    for (usize i = 0; i < n; ++i) {
+        if (!is_finite(x[i]) || !is_finite(y[i])) continue;
+        const f64 nx = (x[i] - xmid) * inv_d;
+        const f64 ny = (y[i] - ymid) * inv_d;
+        bool dup = false;
+        for (usize j = 0; j < i; ++j) {
+            if (active[j] && keel::abs(bwx[j] - nx) <= 1e-13 && keel::abs(bwy[j] - ny) <= 1e-13) {
+                dup = true;
+                break;
+            }
+        }
+        if (!dup) {
+            bwx[i] = nx;
+            bwy[i] = ny;
+            active[i] = 1;
+        }
+    }
+
+    bwx[n] = -1000.0;
+    bwy[n] = -1000.0;
+    bwx[n + 1] = 1000.0;
+    bwy[n + 1] = -1000.0;
+    bwx[n + 2] = 0.0;
+    bwy[n + 2] = 1000.0;
 
     Array<Triangle> cur(salloc);
     Array<Triangle> next_tris(salloc);
@@ -104,10 +117,11 @@ Array<Triangle> delaunay_impl(const f64* x, const f64* y, usize n, Allocator* al
     cur.push_back(Triangle{n, n + 1, n + 2});
 
     for (usize p = 0; p < n; ++p) {
+        if (!active[p]) continue;
         edges.clear();
         next_tris.clear();
         for (const Triangle& t : cur) {
-            if (in_circle_det(bwx.data(), bwy.data(), t.v0, t.v1, t.v2, p) > 1e-12) {
+            if (in_circle_det(bwx.data(), bwy.data(), t.v0, t.v1, t.v2, p) > 1e-13) {
                 edges.push_back(Edge{t.v0, t.v1});
                 edges.push_back(Edge{t.v1, t.v2});
                 edges.push_back(Edge{t.v2, t.v0});
@@ -128,7 +142,7 @@ Array<Triangle> delaunay_impl(const f64* x, const f64* y, usize n, Allocator* al
                 usize vb = edges[i].b;
                 const usize vc = p;
                 const f64 sa = signed_area2(bwx.data(), bwy.data(), va, vb, vc);
-                if (keel::abs(sa) > 1e-15) {
+                if (keel::abs(sa) > 1e-14) {
                     if (sa < 0.0) keel::swap(va, vb);
                     next_tris.push_back(Triangle{va, vb, vc});
                 }
@@ -137,6 +151,7 @@ Array<Triangle> delaunay_impl(const f64* x, const f64* y, usize n, Allocator* al
         keel::swap(cur, next_tris);
     }
 
+    tris.reserve(cur.size());
     for (const Triangle& t : cur) {
         if (t.v0 < n && t.v1 < n && t.v2 < n) {
             tris.push_back(t);
@@ -184,7 +199,7 @@ f64 polyarea(ArrayRef<f64> x, ArrayRef<f64> y) noexcept {
 
 bool inpolygon_point(f64 xq, f64 yq, ArrayRef<f64> xv, ArrayRef<f64> yv) noexcept {
     const usize nv = keel::min(xv.size(), yv.size());
-    if (nv < 3) return false;
+    if (nv < 3 || !is_finite(xq) || !is_finite(yq)) return false;
     bool inside = false;
     usize j = nv - 1;
     for (usize i = 0; i < nv; ++i) {
@@ -192,6 +207,22 @@ bool inpolygon_point(f64 xq, f64 yq, ArrayRef<f64> xv, ArrayRef<f64> yv) noexcep
         const f64 yi = yv[i];
         const f64 xj = xv[j];
         const f64 yj = yv[j];
+        // Boundary (edge & vertex) inclusion check.
+        const f64 dx = xj - xi;
+        const f64 dy = yj - yi;
+        const f64 len2 = dx * dx + dy * dy;
+        const f64 px = xq - xi;
+        const f64 py = yq - yi;
+        if (len2 == 0.0) {
+            if (px == 0.0 && py == 0.0) return true;
+        } else {
+            const f64 cross = px * dy - py * dx;
+            const f64 dot = px * dx + py * dy;
+            if (cross * cross <= 1e-24 * len2 * keel::max(1.0, len2) && dot >= -1e-12 * len2 &&
+                dot <= (1.0 + 1e-12) * len2) {
+                return true;
+            }
+        }
         if ((yi > yq) != (yj > yq)) {
             const f64 x_cross = xi + (yq - yi) * (xj - xi) / (yj - yi);
             if (xq < x_cross) inside = !inside;
@@ -222,16 +253,22 @@ Array<usize> convhull(ArrayRef<f64> x, ArrayRef<f64> y, Allocator* alloc) {
     const usize n = keel::min(x.size(), y.size());
     Array<usize> hull(alloc);
     if (n == 0) return hull;
-    if (n < 3) {
-        hull.reserve(n + 1);
-        for (usize i = 0; i < n; ++i) hull.push_back(i);
-        hull.push_back(0);
+
+    ArenaTemp scratch = get_scratch(alloc);
+    Array<usize> idx(scratch.allocator());
+    idx.reserve(n);
+    for (usize i = 0; i < n; ++i) {
+        if (is_finite(x[i]) && is_finite(y[i])) idx.push_back(i);
+    }
+    const usize m = idx.size();
+    if (m == 0) return hull;
+    if (m < 3) {
+        hull.reserve(m + 1);
+        for (usize i = 0; i < m; ++i) hull.push_back(idx[i]);
+        hull.push_back(idx[0]);
         return hull;
     }
 
-    ArenaTemp scratch = get_scratch(alloc);
-    Array<usize> idx(n, scratch.allocator());
-    for (usize i = 0; i < n; ++i) idx[i] = i;
     keel::sort(idx, [&](usize a, usize b) {
         if (x[a] != x[b]) return x[a] < x[b];
         return y[a] < y[b];
@@ -241,8 +278,8 @@ Array<usize> convhull(ArrayRef<f64> x, ArrayRef<f64> y, Allocator* alloc) {
         return (x[a] - x[o]) * (y[b] - y[o]) - (y[a] - y[o]) * (x[b] - x[o]);
     };
 
-    hull.reserve(2 * n);
-    for (usize i = 0; i < n; ++i) {
+    hull.reserve(2 * m);
+    for (usize i = 0; i < m; ++i) {
         const usize p = idx[i];
         while (hull.size() >= 2 && cross(hull[hull.size() - 2], hull[hull.size() - 1], p) <= 0.0) {
             hull.pop_back();
@@ -250,7 +287,7 @@ Array<usize> convhull(ArrayRef<f64> x, ArrayRef<f64> y, Allocator* alloc) {
         hull.push_back(p);
     }
     const usize lower_size = hull.size() + 1;
-    for (usize i = n - 1; i-- > 0;) {
+    for (usize i = m - 1; i-- > 0;) {
         const usize p = idx[i];
         while (hull.size() >= lower_size &&
                cross(hull[hull.size() - 2], hull[hull.size() - 1], p) <= 0.0) {
@@ -386,13 +423,14 @@ bool griddata(ArrayRef<f64> x, ArrayRef<f64> y, ArrayRef<f64> v, ArrayRef<f64> x
     ArenaTemp scratch = get_scratch(scratch_alloc);
     Allocator* salloc = scratch.allocator();
 
-    // Merge coincident sample points by averaging v.
+    // Merge coincident finite sample points by averaging v.
     Array<f64> ux(n_in, salloc);
     Array<f64> uy(n_in, salloc);
     Array<f64> uv(n_in, salloc);
     Array<usize> counts(n_in, usize{0}, salloc);
     usize n = 0;
     for (usize i = 0; i < n_in; ++i) {
+        if (!is_finite(x[i]) || !is_finite(y[i]) || !is_finite(v[i])) continue;
         bool merged = false;
         for (usize j = 0; j < n; ++j) {
             if (keel::abs(ux[j] - x[i]) <= 1e-12 && keel::abs(uy[j] - y[i]) <= 1e-12) {
@@ -410,12 +448,20 @@ bool griddata(ArrayRef<f64> x, ArrayRef<f64> y, ArrayRef<f64> v, ArrayRef<f64> x
             ++n;
         }
     }
+    if (n == 0) {
+        for (usize q = 0; q < nq; ++q) out[q] = nan;
+        return true;
+    }
     for (usize j = 0; j < n; ++j) {
         if (counts[j] > 1) uv[j] /= as<f64>(counts[j]);
     }
 
     if (method == ScatteredMethod::Nearest) {
         for (usize q = 0; q < nq; ++q) {
+            if (!is_finite(xq[q]) || !is_finite(yq[q])) {
+                out[q] = nan;
+                continue;
+            }
             f64 best_d2 = Limits<f64>::infinity();
             usize best_idx = 0;
             for (usize i = 0; i < n; ++i) {
@@ -433,6 +479,12 @@ bool griddata(ArrayRef<f64> x, ArrayRef<f64> y, ArrayRef<f64> v, ArrayRef<f64> x
     }
 
     if (method == ScatteredMethod::BiharmonicV4) {
+        if (n == 1) {
+            for (usize q = 0; q < nq; ++q) {
+                out[q] = (is_finite(xq[q]) && is_finite(yq[q])) ? uv[0] : nan;
+            }
+            return true;
+        }
         // Sandwell (1987) biharmonic spline interpolation: G * w = uv.
         Array<f64> g(n * n, 0.0, salloc);
         Array<f64> w(n, 0.0, salloc);
@@ -475,6 +527,10 @@ bool griddata(ArrayRef<f64> x, ArrayRef<f64> y, ArrayRef<f64> v, ArrayRef<f64> x
             w[k] = (keel::abs(diag) >= 1e-18) ? (s / diag) : 0.0;
         }
         for (usize q = 0; q < nq; ++q) {
+            if (!is_finite(xq[q]) || !is_finite(yq[q])) {
+                out[q] = nan;
+                continue;
+            }
             f64 acc = 0.0;
             for (usize i = 0; i < n; ++i) {
                 const f64 d = keel::hypot(xq[q] - ux[i], yq[q] - uy[i]);
@@ -708,6 +764,10 @@ bool griddata(ArrayRef<f64> x, ArrayRef<f64> y, ArrayRef<f64> v, ArrayRef<f64> x
         for (usize q = 0; q < nq; ++q) {
             const f64 qx = xq[q];
             const f64 qy = yq[q];
+            if (!is_finite(qx) || !is_finite(qy)) {
+                out[q] = nan;
+                continue;
+            }
             bool found = false;
             for (const Triangle& t : tris) {
                 const f64 xa = ux[t.v0];
@@ -717,7 +777,7 @@ bool griddata(ArrayRef<f64> x, ArrayRef<f64> y, ArrayRef<f64> v, ArrayRef<f64> x
                 const f64 xc = ux[t.v2];
                 const f64 yc = uy[t.v2];
                 const f64 denom = (yb - yc) * (xa - xc) + (xc - xb) * (ya - yc);
-                if (keel::abs(denom) < 1e-15) continue;
+                if (denom == 0.0) continue;
                 const f64 l1 = ((yb - yc) * (qx - xc) + (xc - xb) * (qy - yc)) / denom;
                 const f64 l2 = ((yc - ya) * (qx - xc) + (xa - xc) * (qy - yc)) / denom;
                 const f64 l3 = 1.0 - l1 - l2;
@@ -734,9 +794,152 @@ bool griddata(ArrayRef<f64> x, ArrayRef<f64> y, ArrayRef<f64> v, ArrayRef<f64> x
         return true;
     }
 
+    if (method == ScatteredMethod::Natural) {
+        // Sibson natural-neighbor interpolation via Watson's circumcenter area decomposition.
+        Array<f64> tcx(tris.size(), 0.0, salloc);
+        Array<f64> tcy(tris.size(), 0.0, salloc);
+        Array<f64> tr2(tris.size(), 0.0, salloc);
+        Array<u8> tvalid(tris.size(), u8{0}, salloc);
+        for (usize ti = 0; ti < tris.size(); ++ti) {
+            const Triangle& t = tris[ti];
+            f64 ox = 0.0;
+            f64 oy = 0.0;
+            if (circumcenter(ux[t.v0], uy[t.v0], ux[t.v1], uy[t.v1], ux[t.v2], uy[t.v2], ox, oy)) {
+                tcx[ti] = ox;
+                tcy[ti] = oy;
+                const f64 dx = ux[t.v0] - ox;
+                const f64 dy = uy[t.v0] - oy;
+                tr2[ti] = dx * dx + dy * dy;
+                tvalid[ti] = 1;
+            }
+        }
+
+        auto tri_area2 = [](f64 ax, f64 ay, f64 bx, f64 by, f64 cx, f64 cy) noexcept -> f64 {
+            return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        };
+
+        Array<f64> weights(n, 0.0, salloc);
+        Array<usize> touched(salloc);
+        Array<u32> stamp(n, u32{0}, salloc);
+        u32 cur_stamp = 0;
+
+        for (usize q = 0; q < nq; ++q) {
+            const f64 qx0 = xq[q];
+            const f64 qy0 = yq[q];
+            if (!is_finite(qx0) || !is_finite(qy0)) {
+                out[q] = nan;
+                continue;
+            }
+
+            // Locate containing triangle (ensures query is inside convex hull).
+            usize hit_tri = kInvalidIndex;
+            f64 hit_l1 = 0.0;
+            f64 hit_l2 = 0.0;
+            f64 hit_l3 = 0.0;
+            for (usize ti = 0; ti < tris.size(); ++ti) {
+                const Triangle& t = tris[ti];
+                const f64 xa = ux[t.v0];
+                const f64 ya = uy[t.v0];
+                const f64 xb = ux[t.v1];
+                const f64 yb = uy[t.v1];
+                const f64 xc = ux[t.v2];
+                const f64 yc = uy[t.v2];
+                const f64 denom = (yb - yc) * (xa - xc) + (xc - xb) * (ya - yc);
+                if (denom == 0.0) continue;
+                const f64 l1 = ((yb - yc) * (qx0 - xc) + (xc - xb) * (qy0 - yc)) / denom;
+                const f64 l2 = ((yc - ya) * (qx0 - xc) + (xa - xc) * (qy0 - yc)) / denom;
+                const f64 l3 = 1.0 - l1 - l2;
+                if (l1 >= -1e-9 && l2 >= -1e-9 && l3 >= -1e-9) {
+                    hit_tri = ti;
+                    hit_l1 = l1;
+                    hit_l2 = l2;
+                    hit_l3 = l3;
+                    break;
+                }
+            }
+            if (hit_tri == kInvalidIndex) {
+                out[q] = nan;
+                continue;
+            }
+
+            const Triangle& ht = tris[hit_tri];
+            // Exact vertex match check.
+            if (hit_l1 > 1.0 - 1e-12) {
+                out[q] = uv[ht.v0];
+                continue;
+            }
+            if (hit_l2 > 1.0 - 1e-12) {
+                out[q] = uv[ht.v1];
+                continue;
+            }
+            if (hit_l3 > 1.0 - 1e-12) {
+                out[q] = uv[ht.v2];
+                continue;
+            }
+
+            // Evaluate Watson's stolen-area decomposition; nudge slightly inward if on a Delaunay edge.
+            auto eval_watson = [&](f64 qx, f64 qy, f64& val_out) -> bool {
+                ++cur_stamp;
+                touched.clear();
+                auto add_w = [&](usize v_idx, f64 area) {
+                    if (stamp[v_idx] != cur_stamp) {
+                        stamp[v_idx] = cur_stamp;
+                        weights[v_idx] = 0.0;
+                        touched.push_back(v_idx);
+                    }
+                    weights[v_idx] += area;
+                };
+                for (usize ti = 0; ti < tris.size(); ++ti) {
+                    if (!tvalid[ti]) continue;
+                    const f64 dx = qx - tcx[ti];
+                    const f64 dy = qy - tcy[ti];
+                    if (dx * dx + dy * dy > tr2[ti] * (1.0 + 1e-11)) continue;
+                    const Triangle& t = tris[ti];
+                    f64 c0x = 0.0, c0y = 0.0;
+                    f64 c1x = 0.0, c1y = 0.0;
+                    f64 c2x = 0.0, c2y = 0.0;
+                    if (!circumcenter(qx, qy, ux[t.v1], uy[t.v1], ux[t.v2], uy[t.v2], c0x, c0y) ||
+                        !circumcenter(ux[t.v0], uy[t.v0], qx, qy, ux[t.v2], uy[t.v2], c1x, c1y) ||
+                        !circumcenter(ux[t.v0], uy[t.v0], ux[t.v1], uy[t.v1], qx, qy, c2x, c2y)) {
+                        return false;
+                    }
+                    add_w(t.v0, tri_area2(tcx[ti], tcy[ti], c1x, c1y, c2x, c2y));
+                    add_w(t.v1, tri_area2(tcx[ti], tcy[ti], c2x, c2y, c0x, c0y));
+                    add_w(t.v2, tri_area2(tcx[ti], tcy[ti], c0x, c0y, c1x, c1y));
+                }
+                f64 wsum = 0.0;
+                f64 vsum = 0.0;
+                for (usize idx : touched) {
+                    wsum += weights[idx];
+                    vsum += weights[idx] * uv[idx];
+                }
+                if (wsum <= 1e-30 || !is_finite(wsum)) return false;
+                val_out = vsum / wsum;
+                return is_finite(val_out);
+            };
+
+            f64 nat_val = 0.0;
+            if (!eval_watson(qx0, qy0, nat_val)) {
+                const f64 cx_tri = (ux[ht.v0] + ux[ht.v1] + ux[ht.v2]) / 3.0;
+                const f64 cy_tri = (uy[ht.v0] + uy[ht.v1] + uy[ht.v2]) / 3.0;
+                const f64 qx_n = qx0 + 1e-9 * (cx_tri - qx0);
+                const f64 qy_n = qy0 + 1e-9 * (cy_tri - qy0);
+                if (!eval_watson(qx_n, qy_n, nat_val)) {
+                    nat_val = hit_l1 * uv[ht.v0] + hit_l2 * uv[ht.v1] + hit_l3 * uv[ht.v2];
+                }
+            }
+            out[q] = nat_val;
+        }
+        return true;
+    }
+
     for (usize q = 0; q < nq; ++q) {
         const f64 qx = xq[q];
         const f64 qy = yq[q];
+        if (!is_finite(qx) || !is_finite(qy)) {
+            out[q] = nan;
+            continue;
+        }
         bool found = false;
         for (const Triangle& t : tris) {
             const f64 xa = ux[t.v0];
@@ -746,7 +949,7 @@ bool griddata(ArrayRef<f64> x, ArrayRef<f64> y, ArrayRef<f64> v, ArrayRef<f64> x
             const f64 xc = ux[t.v2];
             const f64 yc = uy[t.v2];
             const f64 denom = (yb - yc) * (xa - xc) + (xc - xb) * (ya - yc);
-            if (keel::abs(denom) < 1e-15) continue;
+            if (denom == 0.0) continue;
             const f64 l1 = ((yb - yc) * (qx - xc) + (xc - xb) * (qy - yc)) / denom;
             const f64 l2 = ((yc - ya) * (qx - xc) + (xa - xc) * (qy - yc)) / denom;
             const f64 l3 = 1.0 - l1 - l2;
@@ -763,18 +966,29 @@ bool griddata(ArrayRef<f64> x, ArrayRef<f64> y, ArrayRef<f64> v, ArrayRef<f64> x
 
 bool griddatan_nearest(ArrayRef<f64> x_colmajor, usize m, usize dims, ArrayRef<f64> v,
                        ArrayRef<f64> xi_colmajor, usize k, MutArrayRef<f64> out) noexcept {
-    if (x_colmajor.size() < m * dims || v.size() < m || xi_colmajor.size() < k * dims ||
-        out.size() < k) {
+    if (dims == 0 || (m > 0 && x_colmajor.size() / dims < m) || v.size() < m ||
+        (k > 0 && xi_colmajor.size() / dims < k) || out.size() < k) {
         return false;
     }
+    const f64 nan = Limits<f64>::quiet_nan();
     if (m == 0) {
-        const f64 nan = Limits<f64>::quiet_nan();
         for (usize q = 0; q < k; ++q) out[q] = nan;
         return true;
     }
     for (usize q = 0; q < k; ++q) {
+        bool q_finite = true;
+        for (usize c = 0; c < dims; ++c) {
+            if (!is_finite(xi_colmajor[c * k + q])) {
+                q_finite = false;
+                break;
+            }
+        }
+        if (!q_finite) {
+            out[q] = nan;
+            continue;
+        }
         f64 best = Limits<f64>::infinity();
-        usize best_idx = 0;
+        usize best_idx = kInvalidIndex;
         for (usize i = 0; i < m; ++i) {
             f64 d2 = 0.0;
             for (usize c = 0; c < dims; ++c) {
@@ -786,7 +1000,7 @@ bool griddatan_nearest(ArrayRef<f64> x_colmajor, usize m, usize dims, ArrayRef<f
                 best_idx = i;
             }
         }
-        out[q] = v[best_idx];
+        out[q] = (best_idx != kInvalidIndex) ? v[best_idx] : nan;
     }
     return true;
 }
@@ -820,7 +1034,7 @@ void histcounts2(ArrayRef<f64> x, ArrayRef<f64> y, ArrayRef<f64> xedges, ArrayRe
 MatchpairsOutput matchpairs(ArrayRef<f64> cost_colmajor, usize rows, usize cols, f64 cost_unmatched,
                             bool maximize, Allocator* alloc) {
     MatchpairsOutput res(alloc);
-    if (rows == 0 || cols == 0 || cost_colmajor.size() < rows * cols) {
+    if (rows == 0 || cols == 0 || cost_colmajor.size() / cols < rows || is_nan(cost_unmatched)) {
         res.unmatched_rows.reserve(rows);
         for (usize i = 0; i < rows; ++i) res.unmatched_rows.push_back(i);
         res.unmatched_cols.reserve(cols);
@@ -829,18 +1043,33 @@ MatchpairsOutput matchpairs(ArrayRef<f64> cost_colmajor, usize rows, usize cols,
     }
 
     const usize n = rows + cols;
-    constexpr f64 kBig = 1e15;
-    ArenaTemp scratch = get_scratch(alloc);
-    Allocator* salloc = scratch.allocator();
-
-    Array<f64> a(n * n, kBig, salloc);
+    f64 max_finite = is_finite(cost_unmatched) ? keel::abs(cost_unmatched) : 0.0;
     for (usize i = 0; i < rows; ++i) {
         for (usize j = 0; j < cols; ++j) {
             const f64 v = cost_colmajor[j * rows + i];
-            a[i * n + j] = maximize ? -v : v;
+            if (is_finite(v)) max_finite = keel::max(max_finite, keel::abs(v));
         }
     }
-    const f64 cu_signed = maximize ? -cost_unmatched : cost_unmatched;
+    // Scale forbidden-arc sentinel dynamically above any finite total assignment cost.
+    const f64 big_cost = keel::max(1e15, 1e6 * (as<f64>(n) + 1.0) * (max_finite + 1.0));
+    const f64 cu_raw = maximize ? -cost_unmatched : cost_unmatched;
+    const f64 cu_signed = is_finite(cu_raw) ? cu_raw : ((cu_raw > 0.0) ? (0.25 * big_cost) : (-0.25 * big_cost));
+
+    ArenaTemp scratch = get_scratch(alloc);
+    Allocator* salloc = scratch.allocator();
+
+    Array<f64> a(n * n, big_cost, salloc);
+    for (usize i = 0; i < rows; ++i) {
+        for (usize j = 0; j < cols; ++j) {
+            const f64 v = cost_colmajor[j * rows + i];
+            if (is_nan(v)) {
+                a[i * n + j] = big_cost;
+            } else {
+                const f64 cv = maximize ? -v : v;
+                a[i * n + j] = is_finite(cv) ? cv : ((cv > 0.0) ? big_cost : (-0.25 * big_cost));
+            }
+        }
+    }
     for (usize i = 0; i < rows; ++i) a[i * n + (cols + i)] = cu_signed;
     for (usize j = 0; j < cols; ++j) a[(rows + j) * n + j] = cu_signed;
     for (usize j = 0; j < cols; ++j) {
@@ -876,6 +1105,7 @@ MatchpairsOutput matchpairs(ArrayRef<f64> cost_colmajor, usize rows, usize cols,
                     j1 = as<i32>(j);
                 }
             }
+            if (j1 < 0) break;
             for (usize j = 0; j <= n; ++j) {
                 if (used[j]) {
                     u[as<usize>(p[j])] += delta;
@@ -886,6 +1116,7 @@ MatchpairsOutput matchpairs(ArrayRef<f64> cost_colmajor, usize rows, usize cols,
             }
             j0 = j1;
         } while (p[as<usize>(j0)] != 0);
+        if (j0 < 0) continue;
         do {
             const i32 j1 = way[as<usize>(j0)];
             p[as<usize>(j0)] = p[as<usize>(j1)];
@@ -903,7 +1134,13 @@ MatchpairsOutput matchpairs(ArrayRef<f64> cost_colmajor, usize rows, usize cols,
     for (usize i = 0; i < rows; ++i) {
         const i32 j = row_assign[i];
         if (j >= 0 && as<usize>(j) < cols) {
-            res.matches.push_back(PairIndex{i, as<usize>(j)});
+            const f64 orig = cost_colmajor[as<usize>(j) * rows + i];
+            const f64 cv = maximize ? -orig : orig;
+            if (!is_nan(orig) && (!is_inf(cv) || cv < 0.0)) {
+                res.matches.push_back(PairIndex{i, as<usize>(j)});
+            } else {
+                res.unmatched_rows.push_back(i);
+            }
         } else {
             res.unmatched_rows.push_back(i);
         }
